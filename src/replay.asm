@@ -1,6 +1,6 @@
 ;==============================================================================
 ; Jochen Hippel's 'TFMX' music replayer for the Atari ST
-; Disassembled and improved by hitchhikr (and decyphered by Claude).
+; Disassembled and improved by hitchhikr (and deciphered by Claude).
 ;==============================================================================
 ;
 ;    tfmx_init    d0.w = subsong 1..n   start this subsong
