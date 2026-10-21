@@ -1,0 +1,589 @@
+;==============================================================================
+;  MODULE FORMAT
+;==============================================================================
+;
+;  Header, 32 bytes (words are big endian):
+;    +0   'TFMX'
+;    +4   number of frequency sequences - 1
+;    +6   number of volume sequences - 1
+;    +8   number of patterns - 1
+;    +10  number of track steps - 1
+;    +12  pattern size in bytes (64 = 32 rows)
+;    +14  (not used by this replayer)
+;    +16  number of subsongs - 1
+;  then, back to back:
+;    frequency sequences   64 bytes each
+;    volume sequences      64 bytes each (these are the instruments)
+;    patterns              <pattern size> bytes each
+;    track table           12 bytes per step
+;    subsong table         6 bytes per subsong
+;    sound effect table    4 bytes per effect (its size is not stored)
+;
+;  Track step: 12 bytes = 4 bytes for each voice (A at +0, B at +4, C at +8).
+;  Each voice moves through the track table on its own: it reads its next
+;  step when its own pattern is over.
+;    +0  pattern number
+;    +1  note transpose (signed, in semitones)
+;    +2  instrument transpose (added to the instrument numbers of the notes)
+;    +3  effect: $Fx = volume attenuation x for this voice (until the next $Fx)
+;                $Ex = song speed: x frames per row
+;                other values = no effect
+;
+;  Pattern row: 2 bytes
+;    note  bits 0-6  0 = no note, 1 = end of the pattern, else the note
+;                    (index in tfmx_ym_frequencies: 12 = C-2, 24 = C-3...)
+;          bit 7     change the pitch only, don't restart the instrument
+;    info  bits 0-4  instrument (volume sequence) number
+;          bit 5     portamento. The slide speed (signed) is the info byte of
+;                    the PREVIOUS row (of the last row for row 0)
+;
+;  Frequency sequence: one byte per frame
+;    $00-$7F   transpose: added to the note and the track transpose
+;    $80-$DF   fixed note in bits 0-6, the pattern note is ignored (drums)
+;              (in noise only mode the same byte is the noise value, relative
+;              to the note or fixed. YM noise period = 31 - (value & 31))
+;    $E0,pos   continue at position pos
+;    $E1       end: keep the last value
+;    $E2       restart the volume sequence, then the next byte
+;    $E3,s,d   vibrato speed s and depth d, then a value byte
+;    $E4,n     tone + noise, noise value n, then a value byte
+;    $E5       noise only, then the next byte
+;    $E6       tone only, then a value byte
+;    $E7,n     switch to frequency sequence n
+;    $E8,n     wait n frames
+;    $E9,p     YM hardware envelope: period p, triangle shape. This is the
+;              "buzz" sound, heard on channels whose volume has bit 4 set
+;
+;  Volume sequence (instrument): 64 bytes
+;    +0  speed: a new volume byte every 'speed' frames
+;    +1  frequency sequence number
+;    +2  vibrato speed
+;    +3  vibrato depth
+;    +4  vibrato delay, in frames
+;    +5  volumes 0-15 (bit 4 = YM envelope mode), and the commands:
+;        $E0,pos  continue at position pos (counted from +0, header included)
+;        $E1      end: keep the last volume
+;        $E8,n    wait n frames
+;
+;  Subsong: 3 words = first track step, last track step, speed
+;  Sound effect: 2 words = note (0 = no effect), instrument
+
+;---- header (32 bytes) ----
+                                dc.b    'TFMX'                              ; magic
+                                dc.w    7-1                                 ; TFMX_HDR_NUM_FSEQ      7 frequency sequences
+                                dc.w    8-1                                 ; TFMX_HDR_NUM_VSEQ      8 volume sequences (instruments)
+                                dc.w    10-1                                ; TFMX_HDR_NUM_PATTERNS  10 patterns
+                                dc.w    56-1                                ; TFMX_HDR_NUM_STEPS     56 track steps
+                                dc.w    64                                  ; TFMX_HDR_PATTERN_SIZE  64 bytes = 32 rows
+                                dc.w    0                                   ; (not used)
+                                dc.w    2-1                                 ; TFMX_HDR_NUM_SUBSONGS  2 subsongs
+                                dcb.b   TFMX_HDR_SIZE-18,0                  ; (padding)
+;---- frequency sequences: TFMX_SEQ_SIZE (64) bytes each ----
+; [nn] = position in the sequence, as used by TFMX_SEQ_LOOP
+                                ; octave "blip" every 8 frames (lead)
+                                dc.b    TFMX_FSEQ_RETRIGGER                 ; [00] restart the volume sequence
+                                dc.b    TFMX_FSEQ_TONE                      ; [01] tone only
+                                dc.b    $0C                                 ; [02] transpose +12
+                                dc.b    $00,$00,$00,$00,$00,$00,$00         ; [03-09] transpose +0 x 7 frames
+                                dc.b    TFMX_SEQ_LOOP,2                     ; [10] loop: continue at [02]
+                                dcb.b   TFMX_SEQ_SIZE-12,0                  ; (padding)
+                                ; one frame one octave up, then the note (pluck)
+                                dc.b    TFMX_FSEQ_RETRIGGER                 ; [00] restart the volume sequence
+                                dc.b    TFMX_FSEQ_TONE                      ; [01] tone only
+                                dc.b    $0C                                 ; [02] transpose +12
+                                dc.b    $00                                 ; [03] transpose +0
+                                dc.b    TFMX_SEQ_END                        ; [04] end: keep the last value
+                                dcb.b   TFMX_SEQ_SIZE-5,0
+                                ; bass drum: noise click, then a fast pitch drop
+                                dc.b    TFMX_FSEQ_RETRIGGER                 ; [00] restart the volume sequence
+                                dc.b    TFMX_FSEQ_NOISE                     ; [01] noise only
+                                dc.b    $93                                 ; [02] fixed noise value $13 (period 12)
+                                dc.b    TFMX_FSEQ_TONE                      ; [03] tone only
+                                dc.b    $97,$94,$90                         ; [04-06] fixed notes B-2 G#2 E-2
+                                dc.b    $8C,$88,$8D,$8C,$8B,$8D,$8E         ; [07-13] fixed notes C-2 G#1 C#2 C-2 B-1 C#2 D-2
+                                dc.b    TFMX_SEQ_LOOP,7                     ; [14] loop: continue at [07]
+                                dcb.b   TFMX_SEQ_SIZE-16,0
+                                ; snare: noise click, then tone+noise falling
+                                dc.b    TFMX_FSEQ_RETRIGGER                 ; [00] restart the volume sequence
+                                dc.b    TFMX_FSEQ_NOISE                     ; [01] noise only
+                                dc.b    $93                                 ; [02] fixed noise value $13 (period 12)
+                                dc.b    TFMX_FSEQ_TONE                      ; [03] tone only
+                                dc.b    $9E,$9F                             ; [04-05] fixed notes F#3 G-3
+                                dc.b    TFMX_FSEQ_TONE_NOISE,$95            ; [06] tone + noise, noise value $95 (period 10)
+                                dc.b    $9E                                 ; [08] fixed note F#3
+                                dc.b    $9D,$9C,$9B,$9A                     ; [09-12] fixed notes F-3 E-3 D#3 D-3
+                                dc.b    TFMX_SEQ_LOOP,9                     ; [13] loop: continue at [09]
+                                dcb.b   TFMX_SEQ_SIZE-15,0
+                                ; hi-hat: high noise
+                                dc.b    TFMX_FSEQ_RETRIGGER                 ; [00] restart the volume sequence
+                                dc.b    TFMX_FSEQ_NOISE                     ; [01] noise only
+                                dc.b    $9F                                 ; [02] fixed noise value $1F (period 0)
+                                dc.b    TFMX_SEQ_END                        ; [03] end: keep the last value
+                                dcb.b   TFMX_SEQ_SIZE-4,0
+                                ; plain tone
+                                dc.b    TFMX_FSEQ_RETRIGGER                 ; [00] restart the volume sequence
+                                dc.b    TFMX_FSEQ_TONE                      ; [01] tone only
+                                dc.b    $00                                 ; [02] transpose +0
+                                dc.b    TFMX_SEQ_END                        ; [03] end: keep the last value
+                                dcb.b   TFMX_SEQ_SIZE-4,0                   ; (unused)
+                                ; one frame of noise, then tone (bass attack)
+                                dc.b    TFMX_FSEQ_RETRIGGER                 ; [00] restart the volume sequence
+                                dc.b    TFMX_FSEQ_NOISE                     ; [01] noise only
+                                dc.b    $9F                                 ; [02] fixed noise value $1F (period 0)
+                                dc.b    TFMX_FSEQ_TONE                      ; [03] tone only
+                                dc.b    $00                                 ; [04] transpose +0
+                                dc.b    TFMX_SEQ_END                        ; [05] end: keep the last value
+                                dcb.b   TFMX_SEQ_SIZE-6,0
+;---- volume sequences = instruments: TFMX_SEQ_SIZE (64) bytes each ----
+;      speed  fseq   vibrato: speed depth delay, then the volumes (0-15)
+.vseq_00:                                                                   ; instrument 0: lead
+                                dc.b    3,0                                 ; a new volume every 3 frames, frequency sequence 0
+                                dc.b    1,2,3                               ; vibrato speed 1, depth 2, delay 3
+                                dc.b    $0F,$0E,$0D,$0C,$0B,$0A,$09,$08,$07,$06,$05,$04,$03,$02,$01,$00 ; volumes
+                                dc.b    TFMX_SEQ_END                        ; hold the last volume
+                                dcb.b   TFMX_SEQ_SIZE-22,0
+.vseq_01:                                                                   ; instrument 1: pluck
+                                dc.b    3,1                                 ; a new volume every 3 frames, frequency sequence 1
+                                dc.b    2,3,4                               ; vibrato speed 2, depth 3, delay 4
+                                dc.b    $0F,$0E,$0D,$0C,$0B,$0A,$09,$08,$07,$06,$05,$04,$03,$02,$01,$00 ; volumes
+                                dc.b    TFMX_SEQ_END                        ; hold the last volume
+                                dcb.b   TFMX_SEQ_SIZE-22,0
+.vseq_02:                                                                   ; instrument 2: kick
+                                dc.b    1,2                                 ; a new volume every 1 frame, frequency sequence 2
+                                dc.b    0,0,0                               ; no vibrato
+                                dc.b    $0D,$0F,$0F,$0F,$0F,$0F,$00         ; volumes
+                                dc.b    TFMX_SEQ_END                        ; hold the last volume
+                                dcb.b   TFMX_SEQ_SIZE-13,0
+.vseq_03:                                                                   ; instrument 3: snare
+                                dc.b    1,3                                 ; a new volume every 1 frame, frequency sequence 3
+                                dc.b    0,0,0                               ; no vibrato
+                                dc.b    $0D,$0F,$0F,$0F,$0F,$0E,$0D,$0C,$0B,$0A,$09,$08,$07,$06,$05,$04,$03,$02,$01 ; volumes
+                                dc.b    TFMX_SEQ_END                        ; hold the last volume
+                                dcb.b   TFMX_SEQ_SIZE-25,0
+.vseq_04:                                                                   ; instrument 4: hi-hat
+                                dc.b    1,4                                 ; a new volume every 1 frame, frequency sequence 4
+                                dc.b    0,0,0                               ; no vibrato
+                                dc.b    $0D,$00                             ; volumes
+                                dc.b    TFMX_SEQ_END                        ; hold the last volume
+                                dcb.b   TFMX_SEQ_SIZE-8,0
+.vseq_05:                                                                   ; instrument 5: drone
+                                dc.b    1,5                                 ; a new volume every 1 frame, frequency sequence 5
+                                dc.b    1,2,0                               ; vibrato speed 1, depth 2, delay 0
+                                dc.b    $0E,$0D                             ; volumes
+                                dc.b    TFMX_SEQ_END                        ; hold the last volume
+                                dcb.b   TFMX_SEQ_SIZE-8,0
+.vseq_06:                                                                   ; instrument 6: decay
+                                dc.b    2,5                                 ; a new volume every 2 frames, frequency sequence 5
+                                dc.b    1,2,0                               ; vibrato speed 1, depth 2, delay 0
+                                dc.b    $0D,$0C,$0B,$0A,$09,$08,$07,$06,$05,$04,$03,$02,$01,$00 ; volumes
+                                dc.b    TFMX_SEQ_END                        ; hold the last volume
+                                dcb.b   TFMX_SEQ_SIZE-20,0
+.vseq_07:                                                                   ; instrument 7: bass
+                                dc.b    1,6                                 ; a new volume every 1 frame, frequency sequence 6
+                                dc.b    2,2,3                               ; vibrato speed 2, depth 2, delay 3
+                                dc.b    $0D,$0F,$0E,$0E,$0D,$0C,$0C,$0C,$0B,$0A,$09,$08,$07,$06,$05,$04,$03,$02,$01,$00 ; volumes
+                                dc.b    TFMX_SEQ_END                        ; hold the last volume
+                                dcb.b   TFMX_SEQ_SIZE-26,0
+;---- patterns: 64 bytes = 32 rows of 2 bytes (note, info) ----
+; Notes are shown before the track transpose: note n plays tfmx_ym_frequencies[n].
+; Info byte: instrument number in bits 0-4 (no row uses bit 5 / portamento,
+; nor note bit 7 or the end-of-pattern note in this song).
+.pattern_00:                    ; silence
+                                dc.b    $00,$00                             ; 00  ---
+                                dc.b    $00,$00                             ; 01  ---
+                                dc.b    $00,$00                             ; 02  ---
+                                dc.b    $00,$00                             ; 03  ---
+                                dc.b    $00,$00                             ; 04  ---
+                                dc.b    $00,$00                             ; 05  ---
+                                dc.b    $00,$00                             ; 06  ---
+                                dc.b    $00,$00                             ; 07  ---
+                                dc.b    $00,$00                             ; 08  ---
+                                dc.b    $00,$00                             ; 09  ---
+                                dc.b    $00,$00                             ; 10  ---
+                                dc.b    $00,$00                             ; 11  ---
+                                dc.b    $00,$00                             ; 12  ---
+                                dc.b    $00,$00                             ; 13  ---
+                                dc.b    $00,$00                             ; 14  ---
+                                dc.b    $00,$00                             ; 15  ---
+                                dc.b    $00,$00                             ; 16  ---
+                                dc.b    $00,$00                             ; 17  ---
+                                dc.b    $00,$00                             ; 18  ---
+                                dc.b    $00,$00                             ; 19  ---
+                                dc.b    $00,$00                             ; 20  ---
+                                dc.b    $00,$00                             ; 21  ---
+                                dc.b    $00,$00                             ; 22  ---
+                                dc.b    $00,$00                             ; 23  ---
+                                dc.b    $00,$00                             ; 24  ---
+                                dc.b    $00,$00                             ; 25  ---
+                                dc.b    $00,$00                             ; 26  ---
+                                dc.b    $00,$00                             ; 27  ---
+                                dc.b    $00,$00                             ; 28  ---
+                                dc.b    $00,$00                             ; 29  ---
+                                dc.b    $00,$00                             ; 30  ---
+                                dc.b    $00,$00                             ; 31  ---
+.pattern_01:                    ; kick / snare / bass groove
+                                dc.b    $0C,$02                             ; 00  C-2  2 kick
+                                dc.b    $00,$00                             ; 01  ---
+                                dc.b    $18,$07                             ; 02  C-3  7 bass
+                                dc.b    $00,$00                             ; 03  ---
+                                dc.b    $0C,$07                             ; 04  C-2  7 bass
+                                dc.b    $00,$00                             ; 05  ---
+                                dc.b    $0C,$07                             ; 06  C-2  7 bass
+                                dc.b    $00,$00                             ; 07  ---
+                                dc.b    $0C,$03                             ; 08  C-2  3 snare
+                                dc.b    $00,$00                             ; 09  ---
+                                dc.b    $0C,$07                             ; 10  C-2  7 bass
+                                dc.b    $00,$00                             ; 11  ---
+                                dc.b    $18,$07                             ; 12  C-3  7 bass
+                                dc.b    $00,$00                             ; 13  ---
+                                dc.b    $0C,$02                             ; 14  C-2  2 kick
+                                dc.b    $00,$00                             ; 15  ---
+                                dc.b    $0C,$07                             ; 16  C-2  7 bass
+                                dc.b    $00,$00                             ; 17  ---
+                                dc.b    $0C,$02                             ; 18  C-2  2 kick
+                                dc.b    $00,$00                             ; 19  ---
+                                dc.b    $0C,$02                             ; 20  C-2  2 kick
+                                dc.b    $00,$00                             ; 21  ---
+                                dc.b    $18,$07                             ; 22  C-3  7 bass
+                                dc.b    $00,$00                             ; 23  ---
+                                dc.b    $0C,$03                             ; 24  C-2  3 snare
+                                dc.b    $00,$00                             ; 25  ---
+                                dc.b    $0C,$07                             ; 26  C-2  7 bass
+                                dc.b    $00,$00                             ; 27  ---
+                                dc.b    $0C,$07                             ; 28  C-2  7 bass
+                                dc.b    $00,$00                             ; 29  ---
+                                dc.b    $18,$07                             ; 30  C-3  7 bass
+                                dc.b    $00,$00                             ; 31  ---
+.pattern_02:                    ; long drone, pluck on row 24
+                                dc.b    $0C,$05                             ; 00  C-2  5 drone
+                                dc.b    $00,$00                             ; 01  ---
+                                dc.b    $00,$00                             ; 02  ---
+                                dc.b    $00,$00                             ; 03  ---
+                                dc.b    $00,$00                             ; 04  ---
+                                dc.b    $00,$00                             ; 05  ---
+                                dc.b    $00,$00                             ; 06  ---
+                                dc.b    $00,$00                             ; 07  ---
+                                dc.b    $00,$00                             ; 08  ---
+                                dc.b    $00,$00                             ; 09  ---
+                                dc.b    $00,$00                             ; 10  ---
+                                dc.b    $00,$00                             ; 11  ---
+                                dc.b    $00,$00                             ; 12  ---
+                                dc.b    $00,$00                             ; 13  ---
+                                dc.b    $00,$00                             ; 14  ---
+                                dc.b    $00,$00                             ; 15  ---
+                                dc.b    $00,$00                             ; 16  ---
+                                dc.b    $00,$00                             ; 17  ---
+                                dc.b    $00,$00                             ; 18  ---
+                                dc.b    $00,$00                             ; 19  ---
+                                dc.b    $00,$00                             ; 20  ---
+                                dc.b    $00,$00                             ; 21  ---
+                                dc.b    $00,$00                             ; 22  ---
+                                dc.b    $00,$00                             ; 23  ---
+                                dc.b    $0C,$01                             ; 24  C-2  1 pluck
+                                dc.b    $00,$00                             ; 25  ---
+                                dc.b    $00,$00                             ; 26  ---
+                                dc.b    $00,$00                             ; 27  ---
+                                dc.b    $00,$00                             ; 28  ---
+                                dc.b    $00,$00                             ; 29  ---
+                                dc.b    $00,$00                             ; 30  ---
+                                dc.b    $00,$00                             ; 31  ---
+.pattern_03:                    ; snare + bass variation
+                                dc.b    $0C,$03                             ; 00  C-2  3 snare
+                                dc.b    $00,$00                             ; 01  ---
+                                dc.b    $18,$07                             ; 02  C-3  7 bass
+                                dc.b    $00,$00                             ; 03  ---
+                                dc.b    $0C,$03                             ; 04  C-2  3 snare
+                                dc.b    $00,$00                             ; 05  ---
+                                dc.b    $0C,$07                             ; 06  C-2  7 bass
+                                dc.b    $00,$00                             ; 07  ---
+                                dc.b    $0C,$03                             ; 08  C-2  3 snare
+                                dc.b    $00,$00                             ; 09  ---
+                                dc.b    $0C,$07                             ; 10  C-2  7 bass
+                                dc.b    $00,$00                             ; 11  ---
+                                dc.b    $0C,$03                             ; 12  C-2  3 snare
+                                dc.b    $00,$00                             ; 13  ---
+                                dc.b    $0C,$07                             ; 14  C-2  7 bass
+                                dc.b    $00,$00                             ; 15  ---
+                                dc.b    $0C,$03                             ; 16  C-2  3 snare
+                                dc.b    $00,$00                             ; 17  ---
+                                dc.b    $0C,$03                             ; 18  C-2  3 snare
+                                dc.b    $00,$00                             ; 19  ---
+                                dc.b    $0C,$03                             ; 20  C-2  3 snare
+                                dc.b    $00,$00                             ; 21  ---
+                                dc.b    $0C,$03                             ; 22  C-2  3 snare
+                                dc.b    $00,$00                             ; 23  ---
+                                dc.b    $0C,$03                             ; 24  C-2  3 snare
+                                dc.b    $00,$00                             ; 25  ---
+                                dc.b    $0C,$03                             ; 26  C-2  3 snare
+                                dc.b    $00,$00                             ; 27  ---
+                                dc.b    $0C,$03                             ; 28  C-2  3 snare
+                                dc.b    $00,$00                             ; 29  ---
+                                dc.b    $0C,$03                             ; 30  C-2  3 snare
+                                dc.b    $00,$00                             ; 31  ---
+.pattern_04:                    ; kick / snare fill
+                                dc.b    $0C,$02                             ; 00  C-2  2 kick
+                                dc.b    $00,$00                             ; 01  ---
+                                dc.b    $0C,$02                             ; 02  C-2  2 kick
+                                dc.b    $00,$00                             ; 03  ---
+                                dc.b    $0C,$02                             ; 04  C-2  2 kick
+                                dc.b    $00,$00                             ; 05  ---
+                                dc.b    $0C,$02                             ; 06  C-2  2 kick
+                                dc.b    $00,$00                             ; 07  ---
+                                dc.b    $0C,$03                             ; 08  C-2  3 snare
+                                dc.b    $00,$00                             ; 09  ---
+                                dc.b    $0C,$02                             ; 10  C-2  2 kick
+                                dc.b    $00,$00                             ; 11  ---
+                                dc.b    $0C,$02                             ; 12  C-2  2 kick
+                                dc.b    $00,$00                             ; 13  ---
+                                dc.b    $0C,$02                             ; 14  C-2  2 kick
+                                dc.b    $00,$00                             ; 15  ---
+                                dc.b    $0C,$02                             ; 16  C-2  2 kick
+                                dc.b    $00,$00                             ; 17  ---
+                                dc.b    $0C,$02                             ; 18  C-2  2 kick
+                                dc.b    $00,$00                             ; 19  ---
+                                dc.b    $0C,$02                             ; 20  C-2  2 kick
+                                dc.b    $00,$00                             ; 21  ---
+                                dc.b    $0C,$02                             ; 22  C-2  2 kick
+                                dc.b    $00,$00                             ; 23  ---
+                                dc.b    $0C,$03                             ; 24  C-2  3 snare
+                                dc.b    $00,$00                             ; 25  ---
+                                dc.b    $0C,$02                             ; 26  C-2  2 kick
+                                dc.b    $00,$00                             ; 27  ---
+                                dc.b    $0C,$03                             ; 28  C-2  3 snare
+                                dc.b    $00,$00                             ; 29  ---
+                                dc.b    $0C,$03                             ; 30  C-2  3 snare
+                                dc.b    $00,$00                             ; 31  ---
+.pattern_05:                    ; snare roll with "decay" accents
+                                dc.b    $0C,$03                             ; 00  C-2  3 snare
+                                dc.b    $00,$00                             ; 01  ---
+                                dc.b    $0C,$03                             ; 02  C-2  3 snare
+                                dc.b    $00,$00                             ; 03  ---
+                                dc.b    $0C,$03                             ; 04  C-2  3 snare
+                                dc.b    $00,$00                             ; 05  ---
+                                dc.b    $0C,$03                             ; 06  C-2  3 snare
+                                dc.b    $00,$00                             ; 07  ---
+                                dc.b    $0C,$06                             ; 08  C-2  6 decay
+                                dc.b    $00,$00                             ; 09  ---
+                                dc.b    $0C,$03                             ; 10  C-2  3 snare
+                                dc.b    $00,$00                             ; 11  ---
+                                dc.b    $0C,$03                             ; 12  C-2  3 snare
+                                dc.b    $00,$00                             ; 13  ---
+                                dc.b    $0C,$03                             ; 14  C-2  3 snare
+                                dc.b    $00,$00                             ; 15  ---
+                                dc.b    $0C,$06                             ; 16  C-2  6 decay
+                                dc.b    $00,$00                             ; 17  ---
+                                dc.b    $0C,$03                             ; 18  C-2  3 snare
+                                dc.b    $00,$00                             ; 19  ---
+                                dc.b    $0C,$06                             ; 20  C-2  6 decay
+                                dc.b    $00,$00                             ; 21  ---
+                                dc.b    $0C,$03                             ; 22  C-2  3 snare
+                                dc.b    $00,$00                             ; 23  ---
+                                dc.b    $0C,$03                             ; 24  C-2  3 snare
+                                dc.b    $00,$00                             ; 25  ---
+                                dc.b    $0C,$03                             ; 26  C-2  3 snare
+                                dc.b    $00,$00                             ; 27  ---
+                                dc.b    $0C,$03                             ; 28  C-2  3 snare
+                                dc.b    $00,$00                             ; 29  ---
+                                dc.b    $0C,$03                             ; 30  C-2  3 snare
+                                dc.b    $00,$00                             ; 31  ---
+.pattern_06:                    ; kick / hi-hats
+                                dc.b    $0C,$02                             ; 00  C-2  2 kick
+                                dc.b    $00,$00                             ; 01  ---
+                                dc.b    $0C,$04                             ; 02  C-2  4 hi-hat
+                                dc.b    $00,$00                             ; 03  ---
+                                dc.b    $0C,$04                             ; 04  C-2  4 hi-hat
+                                dc.b    $00,$00                             ; 05  ---
+                                dc.b    $0C,$04                             ; 06  C-2  4 hi-hat
+                                dc.b    $00,$00                             ; 07  ---
+                                dc.b    $0C,$04                             ; 08  C-2  4 hi-hat
+                                dc.b    $00,$00                             ; 09  ---
+                                dc.b    $0C,$04                             ; 10  C-2  4 hi-hat
+                                dc.b    $00,$00                             ; 11  ---
+                                dc.b    $0C,$04                             ; 12  C-2  4 hi-hat
+                                dc.b    $00,$00                             ; 13  ---
+                                dc.b    $0C,$04                             ; 14  C-2  4 hi-hat
+                                dc.b    $00,$00                             ; 15  ---
+                                dc.b    $0C,$04                             ; 16  C-2  4 hi-hat
+                                dc.b    $00,$00                             ; 17  ---
+                                dc.b    $0C,$04                             ; 18  C-2  4 hi-hat
+                                dc.b    $00,$00                             ; 19  ---
+                                dc.b    $00,$00                             ; 20  ---
+                                dc.b    $00,$00                             ; 21  ---
+                                dc.b    $00,$00                             ; 22  ---
+                                dc.b    $00,$00                             ; 23  ---
+                                dc.b    $0C,$03                             ; 24  C-2  3 snare
+                                dc.b    $00,$00                             ; 25  ---
+                                dc.b    $0C,$04                             ; 26  C-2  4 hi-hat
+                                dc.b    $00,$00                             ; 27  ---
+                                dc.b    $0C,$04                             ; 28  C-2  4 hi-hat
+                                dc.b    $00,$00                             ; 29  ---
+                                dc.b    $0C,$04                             ; 30  C-2  4 hi-hat
+                                dc.b    $00,$00                             ; 31  ---
+.pattern_07:                    ; melody
+                                dc.b    $16,$00                             ; 00  A#2  0 lead
+                                dc.b    $00,$00                             ; 01  ---
+                                dc.b    $18,$00                             ; 02  C-3  0 lead
+                                dc.b    $00,$00                             ; 03  ---
+                                dc.b    $1F,$00                             ; 04  G-3  0 lead
+                                dc.b    $00,$00                             ; 05  ---
+                                dc.b    $16,$00                             ; 06  A#2  0 lead
+                                dc.b    $00,$00                             ; 07  ---
+                                dc.b    $18,$00                             ; 08  C-3  0 lead
+                                dc.b    $00,$00                             ; 09  ---
+                                dc.b    $1F,$00                             ; 10  G-3  0 lead
+                                dc.b    $00,$00                             ; 11  ---
+                                dc.b    $16,$00                             ; 12  A#2  0 lead
+                                dc.b    $00,$00                             ; 13  ---
+                                dc.b    $18,$00                             ; 14  C-3  0 lead
+                                dc.b    $00,$00                             ; 15  ---
+                                dc.b    $20,$00                             ; 16  G#3  0 lead
+                                dc.b    $00,$00                             ; 17  ---
+                                dc.b    $16,$00                             ; 18  A#2  0 lead
+                                dc.b    $00,$00                             ; 19  ---
+                                dc.b    $18,$00                             ; 20  C-3  0 lead
+                                dc.b    $00,$00                             ; 21  ---
+                                dc.b    $1D,$00                             ; 22  F-3  0 lead
+                                dc.b    $00,$00                             ; 23  ---
+                                dc.b    $16,$00                             ; 24  A#2  0 lead
+                                dc.b    $00,$00                             ; 25  ---
+                                dc.b    $18,$00                             ; 26  C-3  0 lead
+                                dc.b    $00,$00                             ; 27  ---
+                                dc.b    $1D,$00                             ; 28  F-3  0 lead
+                                dc.b    $00,$00                             ; 29  ---
+                                dc.b    $00,$00                             ; 30  ---
+                                dc.b    $00,$00                             ; 31  ---
+.pattern_08:                    ; kick / snare / bass line
+                                dc.b    $0C,$02                             ; 00  C-2  2 kick
+                                dc.b    $00,$00                             ; 01  ---
+                                dc.b    $18,$07                             ; 02  C-3  7 bass
+                                dc.b    $00,$00                             ; 03  ---
+                                dc.b    $0C,$07                             ; 04  C-2  7 bass
+                                dc.b    $00,$00                             ; 05  ---
+                                dc.b    $0C,$07                             ; 06  C-2  7 bass
+                                dc.b    $00,$00                             ; 07  ---
+                                dc.b    $0F,$03                             ; 08  D#2  3 snare
+                                dc.b    $00,$00                             ; 09  ---
+                                dc.b    $0C,$07                             ; 10  C-2  7 bass
+                                dc.b    $00,$00                             ; 11  ---
+                                dc.b    $0F,$07                             ; 12  D#2  7 bass
+                                dc.b    $00,$00                             ; 13  ---
+                                dc.b    $0C,$02                             ; 14  C-2  2 kick
+                                dc.b    $00,$00                             ; 15  ---
+                                dc.b    $0C,$07                             ; 16  C-2  7 bass
+                                dc.b    $00,$00                             ; 17  ---
+                                dc.b    $0A,$02                             ; 18  A#1  2 kick
+                                dc.b    $00,$00                             ; 19  ---
+                                dc.b    $0A,$02                             ; 20  A#1  2 kick
+                                dc.b    $00,$00                             ; 21  ---
+                                dc.b    $0C,$07                             ; 22  C-2  7 bass
+                                dc.b    $00,$00                             ; 23  ---
+                                dc.b    $0D,$03                             ; 24  C#2  3 snare
+                                dc.b    $00,$00                             ; 25  ---
+                                dc.b    $0C,$07                             ; 26  C-2  7 bass
+                                dc.b    $00,$00                             ; 27  ---
+                                dc.b    $0D,$07                             ; 28  C#2  7 bass
+                                dc.b    $00,$00                             ; 29  ---
+                                dc.b    $0D,$07                             ; 30  C#2  7 bass
+                                dc.b    $00,$00                             ; 31  ---
+.pattern_09:                    ; the line of pattern 8 as plucks
+                                dc.b    $0C,$01                             ; 00  C-2  1 pluck
+                                dc.b    $00,$00                             ; 01  ---
+                                dc.b    $18,$01                             ; 02  C-3  1 pluck
+                                dc.b    $00,$00                             ; 03  ---
+                                dc.b    $0C,$01                             ; 04  C-2  1 pluck
+                                dc.b    $00,$00                             ; 05  ---
+                                dc.b    $0C,$01                             ; 06  C-2  1 pluck
+                                dc.b    $00,$00                             ; 07  ---
+                                dc.b    $0F,$01                             ; 08  D#2  1 pluck
+                                dc.b    $00,$00                             ; 09  ---
+                                dc.b    $0C,$01                             ; 10  C-2  1 pluck
+                                dc.b    $00,$00                             ; 11  ---
+                                dc.b    $0F,$01                             ; 12  D#2  1 pluck
+                                dc.b    $00,$00                             ; 13  ---
+                                dc.b    $0C,$01                             ; 14  C-2  1 pluck
+                                dc.b    $00,$00                             ; 15  ---
+                                dc.b    $0C,$01                             ; 16  C-2  1 pluck
+                                dc.b    $00,$00                             ; 17  ---
+                                dc.b    $0A,$01                             ; 18  A#1  1 pluck
+                                dc.b    $00,$00                             ; 19  ---
+                                dc.b    $0A,$01                             ; 20  A#1  1 pluck
+                                dc.b    $00,$00                             ; 21  ---
+                                dc.b    $0C,$01                             ; 22  C-2  1 pluck
+                                dc.b    $00,$00                             ; 23  ---
+                                dc.b    $0D,$01                             ; 24  C#2  1 pluck
+                                dc.b    $00,$00                             ; 25  ---
+                                dc.b    $0C,$01                             ; 26  C-2  1 pluck
+                                dc.b    $00,$00                             ; 27  ---
+                                dc.b    $0D,$01                             ; 28  C#2  1 pluck
+                                dc.b    $00,$00                             ; 29  ---
+                                dc.b    $0D,$01                             ; 30  C#2  1 pluck
+                                dc.b    $00,$00                             ; 31  ---
+;---- track table: one 12 byte step per line, one long per voice ----
+;      PP = pattern, TT = note transpose, II = instrument transpose,
+;      FF = effect ($Fx = attenuation x, $Ex = speed x)
+;                                         voice A   voice B   voice C
+;                                        PPTTIIFF  PPTTIIFF  PPTTIIFF
+.tracks:
+                                dc.l    $01000000,$00000000,$00000000       ; step 00
+                                dc.l    $01000000,$00000000,$00000000       ; step 01
+                                dc.l    $01000000,$00000000,$00000000       ; step 02
+                                dc.l    $06000000,$00000000,$00000000       ; step 03
+                                dc.l    $01000000,$02000000,$00000000       ; step 04
+                                dc.l    $01000000,$02000000,$00000000       ; step 05
+                                dc.l    $01000000,$02000000,$00000000       ; step 06
+                                dc.l    $03000000,$02000000,$00000000       ; step 07
+                                dc.l    $01000000,$02000000,$00000000       ; step 08
+                                dc.l    $01000000,$02000000,$00000000       ; step 09
+                                dc.l    $01000000,$02000000,$00000000       ; step 10
+                                dc.l    $04000000,$02000000,$00000000       ; step 11
+                                dc.l    $01000000,$02000000,$00000000       ; step 12
+                                dc.l    $01000000,$02000000,$00000000       ; step 13
+                                dc.l    $01000000,$02000000,$00000000       ; step 14
+                                dc.l    $05000000,$02000000,$00000000       ; step 15
+                                dc.l    $00000000,$02000000,$07000000       ; step 16
+                                dc.l    $00000000,$02000000,$07000000       ; step 17
+                                dc.l    $00000000,$02000000,$07000000       ; step 18
+                                dc.l    $05000000,$02000000,$07000000       ; step 19
+                                dc.l    $01000000,$02000000,$07000000       ; step 20
+                                dc.l    $01000000,$02000000,$07000000       ; step 21
+                                dc.l    $01000000,$02000000,$07000000       ; step 22
+                                dc.l    $04000000,$02000000,$07000000       ; step 23
+                                dc.l    $01FE0000,$02FE0000,$07FE0000       ; step 24: transpose all -2
+                                dc.l    $01FE0000,$02FE0000,$07FE0000       ; step 25: transpose all -2
+                                dc.l    $01FE0000,$02FE0000,$07FE0000       ; step 26: transpose all -2
+                                dc.l    $03FE0000,$02FE0000,$07FE0000       ; step 27: transpose all -2
+                                dc.l    $01000000,$02000000,$07000000       ; step 28
+                                dc.l    $01000000,$02000000,$07000000       ; step 29
+                                dc.l    $01000000,$02000000,$07000000       ; step 30
+                                dc.l    $05000000,$02000000,$07000000       ; step 31
+                                dc.l    $01FE0000,$02FE0000,$07FE0000       ; step 32: transpose all -2
+                                dc.l    $01FE0000,$02FE0000,$07FE0000       ; step 33: transpose all -2
+                                dc.l    $01FE0000,$02FE0000,$07FE0000       ; step 34: transpose all -2
+                                dc.l    $03FE0000,$02FE0000,$07FE0000       ; step 35: transpose all -2
+                                dc.l    $00000000,$02000000,$070000F4       ; step 36: C attenuation 4
+                                dc.l    $00000000,$02000000,$070000F3       ; step 37: C attenuation 3
+                                dc.l    $00000000,$02000000,$070000F2       ; step 38: C attenuation 2
+                                dc.l    $03000000,$02000000,$070000F1       ; step 39: C attenuation 1
+                                dc.l    $01000000,$02000000,$070000F0       ; step 40: C attenuation 0
+                                dc.l    $01000000,$02000000,$07000000       ; step 41
+                                dc.l    $01000000,$02000000,$07000000       ; step 42
+                                dc.l    $05000000,$02000000,$07000000       ; step 43
+                                dc.l    $08000000,$020000F5,$00000000       ; step 44: B attenuation 5
+                                dc.l    $08000000,$020000F3,$00000000       ; step 45: B attenuation 3
+                                dc.l    $08000000,$020000F2,$00000000       ; step 46: B attenuation 2
+                                dc.l    $05000000,$020000F1,$00000000       ; step 47: B attenuation 1
+                                dc.l    $08000000,$020000F0,$09180000       ; step 48: transpose C +24; B attenuation 0
+                                dc.l    $08000000,$02000000,$09180000       ; step 49: transpose C +24
+                                dc.l    $08000000,$02000000,$09180000       ; step 50: transpose C +24
+                                dc.l    $04000000,$02000000,$09180000       ; step 51: transpose C +24
+                                dc.l    $08FE0000,$02FE00F0,$09160000       ; step 52: transpose A -2, B -2, C +22; B attenuation 0
+                                dc.l    $08FE0000,$02FE0000,$09160000       ; step 53: transpose A -2, B -2, C +22
+                                dc.l    $08FE0000,$02FE0000,$09160000       ; step 54: transpose A -2, B -2, C +22
+                                dc.l    $03FE0000,$02FE0000,$09160000       ; step 55: transpose A -2, B -2, C +22
+;---- subsong table: first step, last step, speed (frames per row) ----
+.subsongs:
+                                dc.w    0,55,3                              ; subsong 1: steps 0-55, a row every 3 VBLs
+                                dc.w    0,0,0                               ; subsong 2: unused (speed 0: first row after 65536 frames)
+;---- sound effect table: note (0 = no effect), instrument ----
+.sfx_table:
+                                dc.w    0,0                                 ; effect 0: note 0 = no effect
